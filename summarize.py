@@ -109,6 +109,9 @@ STYLE:
 - Neutral and informative, like a news wire. No "game-changer", no hype words.
 - No emojis.
 - Total length: 60-120 words.
+- Every sentence must be complete. Never stop mid-sentence.
+- The final non-hashtag sentence must end with a period, question mark, or \
+exclamation mark.
 
 Do NOT write a "Source" line — that is added automatically afterwards.
 Output ONLY the post text. No preamble, no explanation.
@@ -148,8 +151,13 @@ UNSUPPORTED:
 # ---------------------------------------------------------------------------
 # GEMINI CALL
 # ---------------------------------------------------------------------------
-def _call_gemini(prompt, temperature=0.3):
-    """Call the Gemini REST API. Returns text, or None on any failure."""
+def _call_gemini(prompt, temperature=0.3, max_tokens=2048):
+    """Call the Gemini REST API. Returns text, or None on any failure.
+
+    max_tokens is the OUTPUT cap. It must be generous: too low a value
+    makes Gemini stop mid-sentence, which was the cause of the cut-off
+    summaries and LinkedIn drafts.
+    """
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
         log.error("LLM_API_KEY not set.")
@@ -159,7 +167,10 @@ def _call_gemini(prompt, temperature=0.3):
     url = config.GEMINI_ENDPOINT.format(model=model)
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": 900},
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
     }
     try:
         resp = requests.post(
@@ -170,8 +181,14 @@ def _call_gemini(prompt, temperature=0.3):
         )
         resp.raise_for_status()
         data = resp.json()
-        parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
+        candidate = data["candidates"][0]
+        parts = candidate.get("content", {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts).strip()
+        # If Gemini stopped because it hit the token cap, the text is
+        # very likely cut off mid-sentence — warn so callers can react.
+        if candidate.get("finishReason") == "MAX_TOKENS":
+            log.warning("Gemini hit MAX_TOKENS — output may be truncated.")
+        return text or None
     except Exception as exc:
         log.error("Gemini call failed: %s", exc)
         return None
@@ -210,23 +227,61 @@ def _fact_check(summary, sources_block):
     return False, unsupported or ["unspecified unsupported claim"]
 
 
+def _clean_linkedin_draft(draft):
+    """Strip code fences and any stray source lines from the LLM draft."""
+    if not draft:
+        return None
+    draft = draft.strip()
+    # Remove markdown code fences if Gemini adds them.
+    draft = re.sub(r"^```(?:\w+)?\s*", "", draft)
+    draft = re.sub(r"\s*```$", "", draft)
+    # Drop any accidental source/read-more lines (we add our own).
+    kept = []
+    for line in draft.splitlines():
+        low = line.strip().lower()
+        if low.startswith("source:") or low.startswith("read more"):
+            continue
+        kept.append(line.rstrip())
+    return "\n".join(kept).strip()
+
+
+# Words that, if a sentence ends on them, signal a cut-off draft.
+_DANGLING_WORDS = {
+    "for", "to", "of", "in", "on", "with", "by", "from", "as", "and", "or",
+    "the", "a", "an", "this", "that", "which", "including", "must", "will",
+    "can", "could", "should", "is", "are", "was", "were", "be", "into",
+    "at", "but", "their", "its",
+}
+
+
+def _looks_complete_linkedin_draft(draft):
+    """True if the draft looks finished (not cut off mid-sentence)."""
+    if not draft:
+        return False
+    lines = [ln.strip() for ln in draft.splitlines() if ln.strip()]
+    content = [ln for ln in lines if not ln.startswith("#")]
+    if not content:
+        return False
+    last = content[-1].strip()
+    # A finished factual post ends with sentence punctuation.
+    if last[-1] not in ".!?":
+        return False
+    # Reject an obvious dangling final word.
+    last_word = re.sub(r"[^A-Za-z]", "", last.split()[-1]).lower()
+    if last_word in _DANGLING_WORDS:
+        return False
+    return True
+
+
 def _build_linkedin_draft(summary, cluster):
     """Turn a fact-checked summary into a ready-to-post LinkedIn draft.
 
     Appends a 'Source' line with real article links so the post is
-    visibly authentic and verifiable. Returns the draft text, or None on
-    failure (caller falls back gracefully). Adds NO new facts.
+    visibly authentic. If Gemini returns a cut-off draft, retries once;
+    if it still looks incomplete, returns None so a broken post is never
+    delivered. Adds NO new facts.
     """
-    draft = _call_gemini(
-        LINKEDIN_PROMPT.format(summary=summary),
-        temperature=0.4,
-    )
-    if not draft:
-        return None
-    draft = draft.strip()
-
-    # Append a Source line. One link keeps it clean; two if a 2nd outlet
-    # exists, which reinforces that the story is cross-verified.
+    # Build the source block once (one or two distinct outlets).
     seen, links = set(), []
     for art in cluster:
         if art["url"] in seen:
@@ -235,9 +290,23 @@ def _build_linkedin_draft(summary, cluster):
         links.append(f"{art['source_name']}: {art['url']}")
         if len(links) == 2:
             break
-
     source_block = "\n".join(f"Read more — {ln}" for ln in links)
-    return f"{draft}\n\nSource:\n{source_block}"
+
+    for attempt in range(1, 3):
+        temp = 0.4 if attempt == 1 else 0.15
+        raw = _call_gemini(
+            LINKEDIN_PROMPT.format(summary=summary),
+            temperature=temp,
+            max_tokens=1024,   # generous — a 120-word post fits easily
+        )
+        draft = _clean_linkedin_draft(raw)
+        if _looks_complete_linkedin_draft(draft):
+            return f"{draft}\n\nSource:\n{source_block}"
+        log.warning("LinkedIn draft looked incomplete on attempt %d.", attempt)
+
+    # Better to send no draft than a broken one.
+    log.error("Could not build a complete LinkedIn draft.")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +341,14 @@ def summarize_story(story):
             log.info("Summary passed fact check (attempt %d).", attempt)
             story["summary"] = summary
             # Build the LinkedIn draft from the VERIFIED summary only.
-            story["linkedin"] = _build_linkedin_draft(summary, cluster)
-            if story["linkedin"] is None:
-                log.warning("LinkedIn draft step failed — sending brief only.")
+            draft = _build_linkedin_draft(summary, cluster)
+            if draft is None:
+                # No usable post -> drop the story rather than deliver
+                # something incomplete.
+                log.error("Dropping story — LinkedIn draft incomplete: %s",
+                          cluster[0]["title"])
+                return None
+            story["linkedin"] = draft
             return story
 
         log.warning("Fact check failed (attempt %d): %s",

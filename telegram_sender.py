@@ -69,55 +69,32 @@ def _send_long(text):
 
 
 def _format_story(story):
-    """Build the final HTML message for one fact-checked story.
+    """Build the Telegram message for one fact-checked story.
 
-    The message has TWO parts:
-      1. Your private review brief (Confidence, Verification, Sources).
-      2. A clearly separated 'LinkedIn-ready' block you can copy and post.
+    The message contains ONLY the copy-paste LinkedIn post (plus a tiny
+    verify-first note). No review brief — the post is the deliverable.
     """
-    cluster = story["cluster"]
-    # Summary is plain text from the LLM — escape it for HTML safety.
-    body = html.escape(story["summary"])
-
-    lines = ["<b>━━━ REVIEW BRIEF (for you) ━━━</b>", "", body, ""]
-
-    # --- Human review mode ---
-    lines.append(f"<b>Confidence:</b> {html.escape(story['confidence'])}")
-    lines.append(f"<b>Verification:</b> {html.escape(story['verification'])}")
-
-    if story["single_source"]:
-        lines.append("")
-        lines.append("⚠️ <b>Single-source story — manually verify "
-                      "before posting.</b>")
-
-    # --- Sources with direct links ---
-    lines.append("")
-    lines.append("<b>Sources:</b>")
-    seen = set()
-    for art in cluster:
-        if art["url"] in seen:
-            continue
-        seen.add(art["url"])
-        name = html.escape(art["source_name"])
-        url = html.escape(art["url"], quote=True)
-        lines.append(f'• <a href="{url}">{name}</a>')
-
-    # --- LinkedIn-ready block (copy-paste this part) ---
     draft = story.get("linkedin")
+
+    # If the draft could not be built completely, do NOT send a broken
+    # post. Send a short honest note instead.
+    if not draft:
+        return ("📋 A story was found, but a clean LinkedIn-ready post "
+                "could not be generated today. Skipping it rather than "
+                "posting something incomplete.")
+
+    lines = ["<b>📋 LinkedIn post — ready to copy</b>", ""]
+    # <code> renders as a tap-to-copy monospace block in Telegram.
+    lines.append(f"<code>{html.escape(draft)}</code>")
     lines.append("")
-    lines.append("<b>━━━ 📋 LINKEDIN-READY (copy below) ━━━</b>")
-    lines.append("")
-    if draft:
-        # <code> renders as a tap-to-copy monospace block in Telegram.
-        lines.append(f"<code>{html.escape(draft)}</code>")
-        lines.append("")
-        lines.append("<i>Step 1: open a source link above and confirm the "
-                      "story is real.\nStep 2: copy the block above and post "
-                      "it to LinkedIn as-is — the source link is already "
-                      "included.</i>")
+
+    # A small, honest note for single-source stories — kept OUT of the
+    # copy block so the post stays clean.
+    if story.get("single_source"):
+        lines.append("⚠️ <i>Single source — open the link and confirm the "
+                      "story before you post.</i>")
     else:
-        lines.append("<i>(LinkedIn draft unavailable today — use the review "
-                      "brief above and write the post yourself.)</i>")
+        lines.append("<i>Tip: open a source link to confirm before posting.</i>")
 
     return "\n".join(lines)
 
