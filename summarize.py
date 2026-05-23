@@ -75,6 +75,45 @@ editing.
 {sources}
 """
 
+# LinkedIn post writer. Runs AFTER the brief summary has passed fact-check,
+# so it is grounded in an already-verified summary — it adds NO new facts.
+LINKEDIN_PROMPT = """You are a technology professional writing a LinkedIn post.
+
+Below is a SHORT, fact-checked summary of a tech news story. Rewrite it as a \
+LinkedIn post for the feed of a computer science student who follows tech \
+closely.
+
+ABSOLUTE RULES:
+- Use ONLY the facts in the summary below. Add NO new numbers, names, or claims.
+- The post must read like a real person wrote it, not a press release.
+
+WRITE THE POST WITH THIS STRUCTURE:
+
+Line 1: A short, specific HOOK (under 12 words) that makes someone stop \
+scrolling. State the most interesting concrete fact — never a vague tease.
+(blank line)
+2-4 short sentences explaining what happened, in plain language.
+(blank line)
+"My take: [ONE LINE PLACEHOLDER]"  <- write this line EXACTLY, as a literal \
+placeholder, so the human can replace it with their own opinion.
+(blank line)
+One open question to the reader that invites comments.
+(blank line)
+3-4 relevant hashtags.
+
+STYLE:
+- Short sentences. Short paragraphs (1-2 lines each). Lots of white space.
+- Confident and curious, not hypey. No "game-changer", no "revolutionary".
+- No emojis except at most one in the hook line.
+- Total length: 60-130 words. Tight enough to post without editing.
+
+Output ONLY the post text. No preamble, no explanation.
+
+=== FACT-CHECKED SUMMARY ===
+{summary}
+"""
+
+
 FACTCHECK_PROMPT = """You are a strict, literal fact-checker.
 
 Below is a SUMMARY and the SOURCE ARTICLE TEXT it was based on. Check whether \
@@ -167,6 +206,19 @@ def _fact_check(summary, sources_block):
     return False, unsupported or ["unspecified unsupported claim"]
 
 
+def _build_linkedin_draft(summary):
+    """Turn a fact-checked summary into a ready-to-post LinkedIn draft.
+
+    Returns the draft text, or None on failure (caller falls back gracefully).
+    The draft adds NO new facts — it only restyles the verified summary.
+    """
+    draft = _call_gemini(
+        LINKEDIN_PROMPT.format(summary=summary),
+        temperature=0.5,  # a little freedom for a natural hook
+    )
+    return draft.strip() if draft else None
+
+
 # ---------------------------------------------------------------------------
 # PUBLIC ENTRY POINT
 # ---------------------------------------------------------------------------
@@ -174,8 +226,9 @@ def summarize_story(story):
     """
     Generate a fact-checked consensus summary for one ranked story.
 
-    `story` is a dict produced by rank.py. Returns the same dict with an
-    added "summary" key, or None if the summary cannot pass the fact check.
+    `story` is a dict produced by rank.py. Returns the same dict with added
+    "summary" and "linkedin" keys, or None if the summary cannot pass the
+    fact check. "linkedin" may be None if only the draft step failed.
     """
     cluster = story["cluster"]
     sources_block = _build_sources_block(cluster)
@@ -197,6 +250,10 @@ def summarize_story(story):
         if passed:
             log.info("Summary passed fact check (attempt %d).", attempt)
             story["summary"] = summary
+            # Build the LinkedIn draft from the VERIFIED summary only.
+            story["linkedin"] = _build_linkedin_draft(summary)
+            if story["linkedin"] is None:
+                log.warning("LinkedIn draft step failed — sending brief only.")
             return story
 
         log.warning("Fact check failed (attempt %d): %s",

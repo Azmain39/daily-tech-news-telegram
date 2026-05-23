@@ -69,12 +69,17 @@ def _send_long(text):
 
 
 def _format_story(story):
-    """Build the final HTML message for one fact-checked story."""
+    """Build the final HTML message for one fact-checked story.
+
+    The message has TWO parts:
+      1. Your private review brief (Confidence, Verification, Sources).
+      2. A clearly separated 'LinkedIn-ready' block you can copy and post.
+    """
     cluster = story["cluster"]
     # Summary is plain text from the LLM — escape it for HTML safety.
     body = html.escape(story["summary"])
 
-    lines = [body, ""]
+    lines = ["<b>━━━ REVIEW BRIEF (for you) ━━━</b>", "", body, ""]
 
     # --- Human review mode ---
     lines.append(f"<b>Confidence:</b> {html.escape(story['confidence'])}")
@@ -96,6 +101,22 @@ def _format_story(story):
         name = html.escape(art["source_name"])
         url = html.escape(art["url"], quote=True)
         lines.append(f'• <a href="{url}">{name}</a>')
+
+    # --- LinkedIn-ready block (copy-paste this part) ---
+    draft = story.get("linkedin")
+    lines.append("")
+    lines.append("<b>━━━ 📋 LINKEDIN-READY (copy below) ━━━</b>")
+    lines.append("")
+    if draft:
+        # <code> renders as a tap-to-copy monospace block in Telegram.
+        lines.append(f"<code>{html.escape(draft)}</code>")
+        lines.append("")
+        lines.append("<i>Step 1: open a source link above and confirm the "
+                      "story is real.\nStep 2: replace the \"My take:\" line "
+                      "with your own one-sentence opinion.\nStep 3: post.</i>")
+    else:
+        lines.append("<i>(LinkedIn draft unavailable today — use the review "
+                      "brief above and write the post yourself.)</i>")
 
     return "\n".join(lines)
 
