@@ -1,0 +1,7 @@
+# Tech News Bot — Python dependencies
+# Pinned to recent stable versions for reproducible GitHub Actions runs.
+
+feedparser==6.0.11      # RSS / Atom feed parsing
+requests==2.32.3        # HTTP + Telegram Bot API + Gemini API
+trafilatura==1.12.2     # clean full-text article extraction
+lxml==5.3.0             # parser backend used by trafilatura
