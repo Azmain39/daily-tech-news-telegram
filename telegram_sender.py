@@ -112,8 +112,9 @@ def _format_story(story):
         lines.append(f"<code>{html.escape(draft)}</code>")
         lines.append("")
         lines.append("<i>Step 1: open a source link above and confirm the "
-                      "story is real.\nStep 2: replace the \"My take:\" line "
-                      "with your own one-sentence opinion.\nStep 3: post.</i>")
+                      "story is real.\nStep 2: copy the block above and post "
+                      "it to LinkedIn as-is — the source link is already "
+                      "included.</i>")
     else:
         lines.append("<i>(LinkedIn draft unavailable today — use the review "
                       "brief above and write the post yourself.)</i>")

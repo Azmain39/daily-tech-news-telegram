@@ -77,36 +77,40 @@ editing.
 
 # LinkedIn post writer. Runs AFTER the brief summary has passed fact-check,
 # so it is grounded in an already-verified summary — it adds NO new facts.
+# This version produces an OPINION-FREE, purely factual post that the user
+# can copy and paste without editing.
 LINKEDIN_PROMPT = """You are a technology professional writing a LinkedIn post.
 
 Below is a SHORT, fact-checked summary of a tech news story. Rewrite it as a \
-LinkedIn post for the feed of a computer science student who follows tech \
-closely.
+clean, FACTUAL LinkedIn post for the feed of a computer science student who \
+follows tech closely.
 
 ABSOLUTE RULES:
 - Use ONLY the facts in the summary below. Add NO new numbers, names, or claims.
-- The post must read like a real person wrote it, not a press release.
+- This is a NEUTRAL, factual news post. Do NOT add personal opinion, \
+prediction, or commentary. Report only what happened.
+- The post must read like a clear, professional human wrote it.
 
 WRITE THE POST WITH THIS STRUCTURE:
 
-Line 1: A short, specific HOOK (under 12 words) that makes someone stop \
-scrolling. State the most interesting concrete fact — never a vague tease.
+Line 1: A short, specific HEADLINE (under 12 words) stating the single most \
+important concrete fact. No vague teasing, no hype.
 (blank line)
-2-4 short sentences explaining what happened, in plain language.
+3-5 short sentences explaining what happened: who, what, and the key verified \
+details from the summary.
 (blank line)
-"My take: [ONE LINE PLACEHOLDER]"  <- write this line EXACTLY, as a literal \
-placeholder, so the human can replace it with their own opinion.
-(blank line)
-One open question to the reader that invites comments.
+One factual closing sentence on context — ONLY if the summary supports it. \
+If not, skip this line.
 (blank line)
 3-4 relevant hashtags.
 
 STYLE:
-- Short sentences. Short paragraphs (1-2 lines each). Lots of white space.
-- Confident and curious, not hypey. No "game-changer", no "revolutionary".
-- No emojis except at most one in the hook line.
-- Total length: 60-130 words. Tight enough to post without editing.
+- Short sentences. Short paragraphs (1-2 lines each). Generous white space.
+- Neutral and informative, like a news wire. No "game-changer", no hype words.
+- No emojis.
+- Total length: 60-120 words.
 
+Do NOT write a "Source" line — that is added automatically afterwards.
 Output ONLY the post text. No preamble, no explanation.
 
 === FACT-CHECKED SUMMARY ===
@@ -206,17 +210,34 @@ def _fact_check(summary, sources_block):
     return False, unsupported or ["unspecified unsupported claim"]
 
 
-def _build_linkedin_draft(summary):
+def _build_linkedin_draft(summary, cluster):
     """Turn a fact-checked summary into a ready-to-post LinkedIn draft.
 
-    Returns the draft text, or None on failure (caller falls back gracefully).
-    The draft adds NO new facts — it only restyles the verified summary.
+    Appends a 'Source' line with real article links so the post is
+    visibly authentic and verifiable. Returns the draft text, or None on
+    failure (caller falls back gracefully). Adds NO new facts.
     """
     draft = _call_gemini(
         LINKEDIN_PROMPT.format(summary=summary),
-        temperature=0.5,  # a little freedom for a natural hook
+        temperature=0.4,
     )
-    return draft.strip() if draft else None
+    if not draft:
+        return None
+    draft = draft.strip()
+
+    # Append a Source line. One link keeps it clean; two if a 2nd outlet
+    # exists, which reinforces that the story is cross-verified.
+    seen, links = set(), []
+    for art in cluster:
+        if art["url"] in seen:
+            continue
+        seen.add(art["url"])
+        links.append(f"{art['source_name']}: {art['url']}")
+        if len(links) == 2:
+            break
+
+    source_block = "\n".join(f"Read more — {ln}" for ln in links)
+    return f"{draft}\n\nSource:\n{source_block}"
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +272,7 @@ def summarize_story(story):
             log.info("Summary passed fact check (attempt %d).", attempt)
             story["summary"] = summary
             # Build the LinkedIn draft from the VERIFIED summary only.
-            story["linkedin"] = _build_linkedin_draft(summary)
+            story["linkedin"] = _build_linkedin_draft(summary, cluster)
             if story["linkedin"] is None:
                 log.warning("LinkedIn draft step failed — sending brief only.")
             return story
