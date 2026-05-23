@@ -21,6 +21,14 @@ import config
 
 log = logging.getLogger("fetch")
 
+# trafilatura and its dependencies emit very chatty messages like
+# "discarding data: None" for every page they can't fully parse. These
+# are harmless but flood the log and hide real problems. Raise their
+# log level so only genuine errors get through.
+for _noisy in ("trafilatura", "trafilatura.core", "trafilatura.utils",
+               "trafilatura.htmlprocessing", "urllib3", "charset_normalizer"):
+    logging.getLogger(_noisy).setLevel(logging.ERROR)
+
 
 def _entry_datetime(entry):
     """Return a timezone-aware datetime for an RSS entry, or None."""
@@ -35,21 +43,44 @@ def _entry_datetime(entry):
 
 
 def _extract_full_text(url):
-    """Download a page and extract clean article body text. None on failure."""
-    try:
-        resp = requests.get(
-            url,
-            timeout=config.HTTP_TIMEOUT,
-            headers={"User-Agent": config.USER_AGENT},
-        )
-        resp.raise_for_status()
-    except Exception as exc:
-        log.warning("Could not download %s (%s)", url, exc)
+    """Download a page and extract clean article body text. None on failure.
+
+    Handles HTTP 429 (Too Many Requests): if a site rate-limits us, we
+    wait briefly and retry once before giving up. A small delay before
+    every request keeps us a polite, low-rate visitor.
+    """
+    html_text = None
+    for attempt in range(1, 3):  # at most 2 tries
+        try:
+            # Be a polite crawler — small pause before each request.
+            time.sleep(config.FETCH_DELAY_SECONDS)
+            resp = requests.get(
+                url,
+                timeout=config.HTTP_TIMEOUT,
+                headers={"User-Agent": config.USER_AGENT},
+            )
+            if resp.status_code == 429:
+                # Rate-limited. Honour Retry-After if the server sent one.
+                wait = int(resp.headers.get("Retry-After", 5))
+                wait = min(wait, 15)  # never stall the whole run too long
+                log.warning("Rate-limited (429) on %s — waiting %ds.",
+                            url, wait)
+                time.sleep(wait)
+                continue  # retry once
+            resp.raise_for_status()
+            html_text = resp.text
+            break
+        except Exception as exc:
+            log.warning("Could not download %s (%s)", url, exc)
+            return None
+
+    if html_text is None:
+        log.warning("Giving up on %s after rate-limit retries.", url)
         return None
 
     try:
         text = trafilatura.extract(
-            resp.text,
+            html_text,
             include_comments=False,
             include_tables=False,
             favor_precision=True,
