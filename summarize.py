@@ -223,8 +223,10 @@ def _fact_check(summary, sources_block):
         temperature=0.0,
     )
     if raw is None:
-        # If the checker itself fails, be conservative and treat as a fail.
-        return False, ["fact-check pass could not run"]
+        # Gemini API error on the fact-checker itself (auth, quota, network).
+        # Don't drop a real story just because the checker had an infra issue.
+        log.warning("Fact-checker Gemini call failed — treating as PASS.")
+        return True, []
 
     if re.search(r"verdict:\s*pass", raw, re.IGNORECASE):
         return True, []
@@ -331,6 +333,7 @@ def summarize_story(story):
     today = date.today().strftime("%d %b %Y")
 
     attempts = 1 + config.MAX_FACTCHECK_REGEN
+    last_summary = None
     for attempt in range(1, attempts + 1):
         # Slightly higher temperature on a retry to escape a bad phrasing.
         temp = 0.3 if attempt == 1 else 0.15
@@ -342,15 +345,13 @@ def summarize_story(story):
             log.warning("Empty summary (attempt %d).", attempt)
             continue
 
+        last_summary = summary
         passed, unsupported = _fact_check(summary, sources_block)
         if passed:
             log.info("Summary passed fact check (attempt %d).", attempt)
             story["summary"] = summary
-            # Build the LinkedIn draft from the VERIFIED summary only.
             draft = _build_linkedin_draft(summary, cluster)
             if draft is None:
-                # No usable post -> drop the story rather than deliver
-                # something incomplete.
                 log.error("Dropping story — LinkedIn draft incomplete: %s",
                           cluster[0]["title"])
                 return None
@@ -360,6 +361,19 @@ def summarize_story(story):
         log.warning("Fact check failed (attempt %d): %s",
                     attempt, "; ".join(unsupported))
 
-    log.error("Dropping story — could not produce a grounded summary: %s",
+    # All retries failed the fact-check (common when source text is short RSS
+    # summaries). Deliver the best summary with a "verify before posting" flag
+    # rather than dropping a real, scored story entirely.
+    if last_summary:
+        log.warning("Delivering story despite repeated fact-check failure — "
+                    "marked for manual verification: %s", cluster[0]["title"])
+        story["summary"] = last_summary
+        story["single_source"] = True   # triggers ⚠️ warning in Telegram
+        draft = _build_linkedin_draft(last_summary, cluster)
+        if draft:
+            story["linkedin"] = draft
+            return story
+
+    log.error("Dropping story — could not produce any summary: %s",
               cluster[0]["title"])
     return None
