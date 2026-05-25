@@ -57,7 +57,8 @@ def run():
     articles = fetch_mod.fetch_all_articles()
     if not articles:
         log.info("No articles fetched. Sending fallback message.")
-        telegram_sender.send_no_news()
+        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+            telegram_sender.send_no_news()
         return
 
     # 2. CLUSTER (deduplicate) ----------------------------------------------
@@ -70,7 +71,10 @@ def run():
     top = rank_mod.select_top(scored)
     if not top:
         log.info("Nothing cleared the bar. Sending fallback message.")
-        telegram_sender.send_no_news()
+        # Only notify on scheduled runs. Manual workflow_dispatch triggers are
+        # used for testing — spamming "no news" on every manual run is noise.
+        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+            telegram_sender.send_no_news()
         return
 
     # 5. SUMMARIZE + FACT-CHECK ---------------------------------------------
@@ -83,7 +87,8 @@ def run():
     # 6. DELIVER -------------------------------------------------------------
     if not final_stories:
         log.info("All candidates failed fact check. Sending fallback message.")
-        telegram_sender.send_no_news()
+        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+            telegram_sender.send_no_news()
         return
 
     if telegram_sender.send_stories(final_stories):
