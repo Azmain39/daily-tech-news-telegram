@@ -198,8 +198,14 @@ def _call_gemini(prompt, temperature=0.3, max_tokens=2048):
 # HELPERS
 # ---------------------------------------------------------------------------
 def _build_sources_block(cluster):
-    """Concatenate (truncated) article texts, labelled by outlet."""
-    chosen = cluster[:config.MAX_ARTICLES_PER_STORY]
+    """Concatenate (truncated) article texts, labelled by outlet.
+
+    Articles are sorted by text length descending so the LLM always sees
+    the richest available source first (full extraction beats RSS summary
+    beats title-only). This matters when some outlets are paywalled.
+    """
+    by_richness = sorted(cluster, key=lambda a: len(a["text"]), reverse=True)
+    chosen = by_richness[:config.MAX_ARTICLES_PER_STORY]
     blocks = []
     for i, art in enumerate(chosen, 1):
         body = art["text"][:config.MAX_CHARS_PER_ARTICLE]

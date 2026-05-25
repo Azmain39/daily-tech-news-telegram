@@ -108,11 +108,24 @@ def send_stories(stories):
 
 
 def send_no_news():
-    """Send the honest 'nothing big today' fallback message."""
+    """Send the honest 'nothing big today' fallback message (scheduled runs)."""
     msg = (
         "🟦 <b>No high-impact tech story today.</b>\n\n"
         "Nothing cleared the importance + authenticity bar in the last 24h. "
         "A quiet day is better than a fabricated headline — check back "
         "tomorrow."
+    )
+    return _send_raw(msg)
+
+
+def send_test_result(articles_found, clusters_found, top_scored):
+    """Brief diagnostic sent after a manual workflow_dispatch test run."""
+    msg = (
+        "⚙️ <b>Manual test run complete.</b>\n\n"
+        f"Articles fetched: <b>{articles_found}</b>\n"
+        f"Story clusters: <b>{clusters_found}</b>\n"
+        f"Stories above score bar: <b>{top_scored}</b>\n\n"
+        "<i>If articles_fetched = 0, check GitHub Actions logs for feed errors.\n"
+        "The scheduled 8 AM BST run sends the real daily story.</i>"
     )
     return _send_raw(msg)

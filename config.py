@@ -256,8 +256,9 @@ HTTP_TIMEOUT = 15            # reduced from 20 — faster failure for blocked si
 FETCH_DELAY_SECONDS = 0.5    # reduced from 1.0 — still polite, but 90+ feeds
                              # need to finish within the GitHub Actions window.
                              # Raise to 1.0 if you see persistent 429 errors.
-MIN_RSS_TEXT_CHARS = 150     # minimum chars required for an RSS summary fallback
-                             # (lower than the 250 required for full-text extraction)
+MIN_RSS_TEXT_CHARS = 50      # minimum chars required for an RSS summary fallback.
+                             # BBC, Reuters, NYT summaries are often 50-100 chars
+                             # after HTML stripping — 150 was silently dropping them.
 USER_AGENT = (
     "Mozilla/5.0 (compatible; TechNewsBot/1.0; "
     "+personal-automation; respectful-fetch)"

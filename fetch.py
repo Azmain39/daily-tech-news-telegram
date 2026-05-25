@@ -186,13 +186,15 @@ def fetch_all_articles():
 
             if not feed["trusted"]:
                 # Discovery-only feeds: skip the HTTP round-trip entirely.
-                # Their text is only used for clustering, not for LLM input.
-                text = _get_rss_summary(entry)
-                if text is None:
-                    continue
+                # Their text is used only for clustering, not for LLM input.
+                # Use RSS summary if available; fall back to title so the
+                # article still participates in cluster cross-verification.
+                text = _get_rss_summary(entry) or title
                 rss_fallback = True
             else:
-                # Trusted feeds: try full extraction first, then RSS fallback.
+                # Trusted feeds: try full extraction first, then RSS fallback,
+                # then the article title as a last resort (enough for clustering;
+                # _build_sources_block prefers articles with more text for LLM).
                 text = _extract_full_text(url)
                 if text is None:
                     rss_text = _get_rss_summary(entry)
@@ -201,8 +203,10 @@ def fetch_all_articles():
                         rss_fallback = True
                         log.info("RSS-summary fallback used: %s", title[:60])
                     else:
-                        log.info("No usable text for: %s", title[:60])
-                        continue
+                        # Last resort: title only. Still valuable for clustering.
+                        text = title
+                        rss_fallback = True
+                        log.info("Title-only fallback used: %s", title[:60])
 
             articles.append({
                 "source_name":  feed["name"],

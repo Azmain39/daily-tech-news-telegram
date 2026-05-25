@@ -53,11 +53,15 @@ log = logging.getLogger("main")
 
 
 def run():
+    is_manual = os.environ.get("GITHUB_EVENT_NAME", "") == "workflow_dispatch"
+
     # 1. FETCH ---------------------------------------------------------------
     articles = fetch_mod.fetch_all_articles()
     if not articles:
-        log.info("No articles fetched. Sending fallback message.")
-        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+        log.info("No articles fetched.")
+        if is_manual:
+            telegram_sender.send_test_result(0, 0, 0)
+        else:
             telegram_sender.send_no_news()
         return
 
@@ -70,10 +74,10 @@ def run():
     # 4. SELECT --------------------------------------------------------------
     top = rank_mod.select_top(scored)
     if not top:
-        log.info("Nothing cleared the bar. Sending fallback message.")
-        # Only notify on scheduled runs. Manual workflow_dispatch triggers are
-        # used for testing — spamming "no news" on every manual run is noise.
-        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+        log.info("Nothing cleared the bar.")
+        if is_manual:
+            telegram_sender.send_test_result(len(articles), len(clusters), 0)
+        else:
             telegram_sender.send_no_news()
         return
 
@@ -86,14 +90,15 @@ def run():
 
     # 6. DELIVER -------------------------------------------------------------
     if not final_stories:
-        log.info("All candidates failed fact check. Sending fallback message.")
-        if os.environ.get("GITHUB_EVENT_NAME", "schedule") != "workflow_dispatch":
+        log.info("All candidates failed fact check.")
+        if is_manual:
+            telegram_sender.send_test_result(len(articles), len(clusters), len(top))
+        else:
             telegram_sender.send_no_news()
         return
 
     if telegram_sender.send_stories(final_stories):
-        log.info("Delivered %d story/stories to Telegram.",
-                 len(final_stories))
+        log.info("Delivered %d story/stories to Telegram.", len(final_stories))
     else:
         log.error("One or more Telegram deliveries failed.")
 
