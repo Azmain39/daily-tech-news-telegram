@@ -281,40 +281,61 @@ def _looks_complete_linkedin_draft(draft):
     return True
 
 
-def _build_linkedin_draft(summary, cluster):
-    """Turn a fact-checked summary into a ready-to-post LinkedIn draft.
-
-    Appends a 'Source' line with real article links so the post is
-    visibly authentic. If Gemini returns a cut-off draft, retries once;
-    if it still looks incomplete, returns None so a broken post is never
-    delivered. Adds NO new facts.
-    """
-    # Build the source block once (one or two distinct outlets).
+def _source_block(cluster):
+    """Build 'Read more' lines for up to 2 trusted outlets."""
     seen, links = set(), []
     for art in cluster:
         if art["url"] in seen:
             continue
         seen.add(art["url"])
-        links.append(f"{art['source_name']}: {art['url']}")
+        links.append(f"Read more — {art['source_name']}: {art['url']}")
         if len(links) == 2:
             break
-    source_block = "\n".join(f"Read more — {ln}" for ln in links)
+    return "\n".join(links)
+
+
+def _template_post(cluster):
+    """
+    LLM-free fallback post built directly from the best article text.
+
+    Used when Gemini is down or keeps returning unusable output. The post
+    is clearly marked for manual verification before publishing.
+    """
+    best = max(cluster, key=lambda a: len(a["text"]))
+    snippet = best["text"][:400].strip()
+    # Trim to the last clean sentence boundary.
+    for punct in ".!?":
+        idx = snippet.rfind(punct, 80)
+        if idx > 0:
+            snippet = snippet[:idx + 1]
+            break
+    return f"{best['title']}\n\n{snippet}\n\n{_source_block(cluster)}"
+
+
+def _build_linkedin_draft(summary, cluster):
+    """Turn a fact-checked summary into a ready-to-post LinkedIn draft.
+
+    If Gemini returns a cut-off or unusable draft, retries once.
+    If both LLM attempts fail, falls back to _template_post() so the story
+    is never dropped purely because the LLM draft step failed.
+    """
+    src = _source_block(cluster)
 
     for attempt in range(1, 3):
         temp = 0.4 if attempt == 1 else 0.15
         raw = _call_gemini(
             LINKEDIN_PROMPT.format(summary=summary),
             temperature=temp,
-            max_tokens=1024,   # generous — a 120-word post fits easily
+            max_tokens=1024,
         )
         draft = _clean_linkedin_draft(raw)
         if _looks_complete_linkedin_draft(draft):
-            return f"{draft}\n\nSource:\n{source_block}"
+            return f"{draft}\n\nSource:\n{src}"
         log.warning("LinkedIn draft looked incomplete on attempt %d.", attempt)
 
-    # Better to send no draft than a broken one.
-    log.error("Could not build a complete LinkedIn draft.")
-    return None
+    # LLM draft failed — use the raw cleaned output if non-empty, else template.
+    log.warning("Falling back to template post after LLM draft failures.")
+    return _template_post(cluster)
 
 
 # ---------------------------------------------------------------------------
@@ -361,19 +382,22 @@ def summarize_story(story):
         log.warning("Fact check failed (attempt %d): %s",
                     attempt, "; ".join(unsupported))
 
-    # All retries failed the fact-check (common when source text is short RSS
-    # summaries). Deliver the best summary with a "verify before posting" flag
-    # rather than dropping a real, scored story entirely.
+    # All retries failed the fact-check (common with short RSS source text).
+    # Deliver with a "verify before posting" flag rather than dropping.
     if last_summary:
-        log.warning("Delivering story despite repeated fact-check failure — "
-                    "marked for manual verification: %s", cluster[0]["title"])
+        log.warning("Delivering despite fact-check failure — verify before "
+                    "posting: %s", cluster[0]["title"])
         story["summary"] = last_summary
         story["single_source"] = True   # triggers ⚠️ warning in Telegram
-        draft = _build_linkedin_draft(last_summary, cluster)
-        if draft:
-            story["linkedin"] = draft
-            return story
+        story["linkedin"] = _build_linkedin_draft(last_summary, cluster)
+        return story
 
-    log.error("Dropping story — could not produce any summary: %s",
-              cluster[0]["title"])
+    # Gemini is completely unavailable — use a template post so the story
+    # still reaches the user. Always better than silence on a scored story.
+    log.warning("Gemini API unavailable — using template post for: %s",
+                cluster[0]["title"])
+    story["summary"] = cluster[0]["title"]
+    story["linkedin"] = _template_post(cluster)
+    story["single_source"] = True       # triggers ⚠️ verify warning
+    return story
     return None
